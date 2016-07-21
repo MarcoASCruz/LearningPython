@@ -37,6 +37,10 @@ class KeystrokeModel:
 		self.keyCode = keyCode;
 		self.time = time;
 		self.action = action;
+class ValidateModel:
+	def __init__(self, keyTimePressed, latency): #latency up-down
+		self.keyTimePressed = keyTimePressed;
+		self.latency = latency;
 
 def keystrokeDecoder(obj):
 	return KeystrokeModel(obj['keyCode'], obj['time'], obj['action']);
@@ -51,9 +55,13 @@ class ValidateKeys:
 		self.fakeTimePressedKeys = self.getTimePressedKeys(fakeKeysMatrix);
 		
 		self.originalLatency = self.getLatencies(originalKeysMatrix);
+		self.fakeLatency = self.getLatencies(fakeKeysMatrix);
 		
-		self.trainingGroup = [];
-		self.groupClassification = [];
+		self.trainingGroupPressedKey = [];
+		self.groupClassificationPressedKey = [];
+		
+		self.trainingGroupLatency = [];
+		self.groupClassificationLatency = [];
 		
 	def getTimePressedKeys(self, keysMatrix):
 		result = [];
@@ -87,7 +95,7 @@ class ValidateKeys:
 			nextKeyDownPosition = self.findNextKeyDownPosition(keystrokes, nextPosition, keystrokes[i]);
 			if nextKeyDownPosition != None:
 				keyModel = [
-					"{0} and {1}".format(keyUp.keyCode, keystrokes[nextKeyDownPosition].keyCode)
+					"{0}.{1}".format(keyUp.keyCode, keystrokes[nextKeyDownPosition].keyCode)
 					,
 					self.calcLatency(keyUp, keystrokes[nextKeyDownPosition])
 				];
@@ -119,31 +127,49 @@ class ValidateKeys:
 		else:
 			latency = getDate(keyUp.time) - getDate(keyDown.time);
 			latency = -convertToMilliseconds(latency.microseconds);
-
-		print(getDate(keyUp.time));
-		print(getDate(keyDown.time));
 		
 		return latency;
 	
 	def validate(self, keys):
-		self.createTrainingGroup();
-		neigh = KNeighborsClassifier(n_neighbors = 3);
-		neigh.fit(self.trainingGroup, self.groupClassification);
-		print(self.getTimePressedKey(keys));
-		return ''.join(neigh.predict(self.getTimePressedKey(keys)));
-	def createTrainingGroup(self): #fill self.trainingGroup and groupClassification
-		trainingGroup = [];
-		groupClassification = [];
+		self.createTrainingGroupPressedKey();
+		self.createTrainingGroupLatency();
+		
+		predictUsingPressedKey = self.predict(self.trainingGroupPressedKey, self.groupClassificationPressedKey, self.getTimePressedKey(keys));
+		predictUsingLatency = self.predict(self.trainingGroupLatency, self.groupClassificationLatency, self.getLatency(keys));
+		
+		return ValidateModel(predictUsingPressedKey, predictUsingLatency);
+		
+	def createTrainingGroupPressedKey(self): #fill self.trainingGroupPressedKey and groupClassificationPressedKey
+		trainingGroupPressedKey = [];
+		groupClassificationPressedKey = [];
 		for keys in self.originalTimePressedKeys:
 			for keyModel in keys:
-				trainingGroup.append(keyModel);
-				groupClassification.append("T");
+				trainingGroupPressedKey.append(keyModel);
+				groupClassificationPressedKey.append("T");
 		for keys in self.fakeTimePressedKeys:
 			for keyModel in keys:
-				trainingGroup.append(keyModel);	
-				groupClassification.append("F");
-		self.trainingGroup = trainingGroup;
-		self.groupClassification = groupClassification;
+				trainingGroupPressedKey.append(keyModel);	
+				groupClassificationPressedKey.append("F");
+		self.trainingGroupPressedKey = trainingGroupPressedKey;
+		self.groupClassificationPressedKey = groupClassificationPressedKey;
+		
+	def createTrainingGroupLatency(self): #
+		trainingGroupLatency = [];
+		groupClassificationLatency = [];
+		for keys in self.originalLatency:
+			for keyModel in keys:
+				trainingGroupLatency.append(keyModel);
+				groupClassificationLatency.append("T");
+		for keys in self.fakeLatency:
+			for keyModel in keys:
+				trainingGroupLatency.append(keyModel);	
+				groupClassificationLatency.append("F");
+		self.trainingGroupLatency = trainingGroupLatency;
+		self.groupClassificationLatency = groupClassificationLatency;
+	def predict(self, trainingGroup, groupClassification, testDatas):
+		neigh = KNeighborsClassifier(n_neighbors = 3, metric="euclidean");
+		neigh.fit(trainingGroup, groupClassification);
+		return ''.join(neigh.predict(testDatas));
 
 def getDate(dateMilliseconds): 
 	timeMilliseconds = timedelta(milliseconds = dateMilliseconds);
