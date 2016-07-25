@@ -2,36 +2,94 @@ from flask import Flask, request, jsonify
 from json import JSONEncoder
 import json
 
+import mysql.connector
+
 from datetime import timedelta
 import datetime
 
 from sklearn.neighbors import KNeighborsClassifier
 
 app = Flask(__name__)
-originalModels = [];
-fakeModels = [];
 
+@app.route('/setSample', methods=['POST'])
+def setSample():
+	result = "OK"
+	models = json.loads(request.form['model'], object_hook = keystrokeDecoder);
+	idUser = request.form['idUser'];
+	insertKeyModelInDB(getAddModelQuery, idUser, models)
+	#insertKeyModelInDB(getAddModelFakeQuery, idUser, models)
+	return result;
+def getAddModelQuery():
+	add_query = ("INSERT INTO mdl_user_info_keystroke "
+				   "(keyCode, time, action, idUser) "
+				   "VALUES (%(keyCode)s, %(time)s, %(action)s, %(idUser)s)");
+	return add_query;
 	
-@app.route('/validateModel', methods=['POST', 'GET'])
-def validateModel():
-	global originalModels;
-	global fakeModels;
-	
-	if request.method == 'POST':
-		formModel = request.form['model'];
-		if (request.form['training'] == "true"):
-			if (request.form['original'] == "true"):
-				originalModels.append(json.loads(formModel, object_hook = keystrokeDecoder));
-			else:
-				fakeModels.append(json.loads(formModel, object_hook = keystrokeDecoder));
-		else:
-			validator = ValidateKeys(originalModels, fakeModels);
-			keys = json.loads(formModel, object_hook = keystrokeDecoder);
-			validated = validator.validate(keys);
-			return Encoder().encode({"originals":validator.originalTimePressedKeys, "fakes":validator.fakeTimePressedKeys, "validated": validated});
-	validator = ValidateKeys(originalModels, fakeModels);
-	return Encoder().encode({"originals":originalModels, "latency":validator.originalLatency});
+@app.route('/validate', methods=['POST'])
+def validate():
+	result = "OK"
+	models = json.loads(request.form['model'], object_hook = keystrokeDecoder);
+	idUser = request.form['idUser'];
+	#insertKeyModelInDB(getAddModelOriginalQuery, idUser, models)
+	##insertKeyModelInDB(getAddModelFakeQuery, idUser, models)
+	validator = ValidateKeys(selectOriginalModelsFromDB(idUser), selectFakeModelsFromDB(idUser));
+	validated = validator.validate(models);
+	return Encoder().encode(validated);
 
+def getAddModelOriginalQuery():
+	add_query = ("INSERT INTO mdl_user_info_keystroke_original "
+				   "(keyCode, time, action, idUser) "
+				   "VALUES (%(keyCode)s, %(time)s, %(action)s, %(idUser)s)");
+	return add_query;	
+
+def insertKeyModelInDB(getQuery, idUser, models):	
+	try:
+		cnx = mysql.connector.connect(user='root', database='moodle')
+		cursor = cnx.cursor()
+		
+		for model in models:
+			cursor.execute(getQuery(), getModelQuery(model, idUser))
+
+		cnx.commit();
+		cursor.close();
+		cnx.close();
+	except mysql.connector.Error as err:
+		print(err.msg);
+		exit(1);
+
+def getModelQuery(keyModel, idUser):
+	data_model_keystroke = {
+		 'keyCode': keyModel.keyCode,
+		  'time': keyModel.time,
+		  'action': keyModel.action,
+		  'idUser': idUser,
+		}
+	return data_model_keystroke;
+
+def selectOriginalModelsFromDB(idUser):		
+	query = "SELECT keyCode, time, action FROM mdl_user_info_keystroke WHERE idUser = %(idUser)s ORDER BY time";
+	return selectModelsFromDB(query, idUser);
+
+def selectFakeModelsFromDB(idUser):
+	query = "SELECT keyCode, time, action FROM mdl_user_info_keystroke WHERE idUser <> %(idUser)s ORDER BY time";
+	return selectModelsFromDB(query, idUser);
+
+def selectModelsFromDB(query, idUser):
+	models = []
+	try:
+		cnx = mysql.connector.connect(user='root', database='moodle')
+		cursor = cnx.cursor();
+		
+		cursor.execute(query, {'idUser': idUser});
+		for (keyCode, time, action) in cursor:
+			models.append(KeystrokeModel(keyCode, time, action));
+
+		cursor.close();
+		cnx.close();
+	except mysql.connector.Error as err:
+		print(err.msg);
+	return models;
+	
 class KeystrokeModel:
 	def __init__(self, keyCode, time, action=None):
 		self.keyCode = keyCode;
@@ -50,12 +108,12 @@ class Encoder(JSONEncoder):
         return o.__dict__  
 
 class ValidateKeys:		
-	def __init__(self, originalKeysMatrix, fakeKeysMatrix):
-		self.originalTimePressedKeys = self.getTimePressedKeys(originalKeysMatrix); #originalTimePressedKeys is a matrix too [[key, time]]
-		self.fakeTimePressedKeys = self.getTimePressedKeys(fakeKeysMatrix);
+	def __init__(self, originalKeys, fakeKeys):
+		self.originalTimePressedKeys = self.getTimePressedKeys(originalKeys);
+		self.fakeTimePressedKeys = self.getTimePressedKeys(fakeKeys);
 		
-		self.originalLatency = self.getLatencies(originalKeysMatrix);
-		self.fakeLatency = self.getLatencies(fakeKeysMatrix);
+		self.originalLatency = self.getLatencies(originalKeys);
+		self.fakeLatency = self.getLatencies(fakeKeys);
 		
 		self.trainingGroupPressedKey = [];
 		self.groupClassificationPressedKey = [];
@@ -63,12 +121,7 @@ class ValidateKeys:
 		self.trainingGroupLatency = [];
 		self.groupClassificationLatency = [];
 		
-	def getTimePressedKeys(self, keysMatrix):
-		result = [];
-		for keys in keysMatrix:
-			result.append(self.getTimePressedKey(keys));
-		return result;
-	def getTimePressedKey(self, keystrokes):
+	def getTimePressedKeys(self, keystrokes):
 		result = [];
 		
 		for i in range(0, len(keystrokes), 1):
@@ -80,12 +133,7 @@ class ValidateKeys:
 				
 		return result;
 	
-	def getLatencies(self, keysMatrix):
-		result = [];
-		for keys in keysMatrix:
-			result.append(self.getLatency(keys));
-		return result;
-	def getLatency(self, keystrokes):
+	def getLatencies(self, keystrokes):
 		result = [];
 		
 		i = 0;
@@ -134,36 +182,46 @@ class ValidateKeys:
 		self.createTrainingGroupPressedKey();
 		self.createTrainingGroupLatency();
 		
-		predictUsingPressedKey = self.predict(self.trainingGroupPressedKey, self.groupClassificationPressedKey, self.getTimePressedKey(keys));
-		predictUsingLatency = self.predict(self.trainingGroupLatency, self.groupClassificationLatency, self.getLatency(keys));
+		print(self.originalTimePressedKeys)
+		print("-------------------")
+		print(self.trainingGroupPressedKey)
+		print("-------------------")
+		print(self.groupClassificationPressedKey)
+		print("-------------------")
+		print(self.trainingGroupLatency)
+		print("-------------------")
+		print(self.groupClassificationLatency)
+		print("-------------------")
+		print(self.getTimePressedKeys(keys))
+		print("-------------------")
+		print(self.getLatencies(keys))
+		
+		predictUsingPressedKey = self.predict(self.trainingGroupPressedKey, self.groupClassificationPressedKey, self.getTimePressedKeys(keys));
+		predictUsingLatency = self.predict(self.trainingGroupLatency, self.groupClassificationLatency, self.getLatencies(keys));
 		
 		return ValidateModel(predictUsingPressedKey, predictUsingLatency);
 		
 	def createTrainingGroupPressedKey(self): #fill self.trainingGroupPressedKey and groupClassificationPressedKey
 		trainingGroupPressedKey = [];
 		groupClassificationPressedKey = [];
-		for keys in self.originalTimePressedKeys:
-			for keyModel in keys:
-				trainingGroupPressedKey.append(keyModel);
-				groupClassificationPressedKey.append("T");
-		for keys in self.fakeTimePressedKeys:
-			for keyModel in keys:
-				trainingGroupPressedKey.append(keyModel);	
-				groupClassificationPressedKey.append("F");
+		for key in self.originalTimePressedKeys:
+			trainingGroupPressedKey.append(key);
+			groupClassificationPressedKey.append("T");
+		for key in self.fakeTimePressedKeys:	
+			trainingGroupPressedKey.append(key);
+			groupClassificationPressedKey.append("F");
 		self.trainingGroupPressedKey = trainingGroupPressedKey;
 		self.groupClassificationPressedKey = groupClassificationPressedKey;
 		
 	def createTrainingGroupLatency(self): #
 		trainingGroupLatency = [];
 		groupClassificationLatency = [];
-		for keys in self.originalLatency:
-			for keyModel in keys:
-				trainingGroupLatency.append(keyModel);
-				groupClassificationLatency.append("T");
-		for keys in self.fakeLatency:
-			for keyModel in keys:
-				trainingGroupLatency.append(keyModel);	
-				groupClassificationLatency.append("F");
+		for key in self.originalLatency:
+			trainingGroupLatency.append(key);
+			groupClassificationLatency.append("T");
+		for key in self.fakeLatency:
+			trainingGroupLatency.append(key);
+			groupClassificationLatency.append("F");
 		self.trainingGroupLatency = trainingGroupLatency;
 		self.groupClassificationLatency = groupClassificationLatency;
 	def predict(self, trainingGroup, groupClassification, testDatas):
