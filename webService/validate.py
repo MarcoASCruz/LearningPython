@@ -16,53 +16,62 @@ def setSample():
 	result = "OK"
 	models = json.loads(request.form['model'], object_hook = keystrokeDecoder);
 	idUser = request.form['idUser'];
-	insertKeyModelInDB(getAddModelQuery, idUser, models)
-	#insertKeyModelInDB(getAddModelFakeQuery, idUser, models)
+	insertKeystrokeDataInDB(idUser, models)
 	return result;
-def getAddModelQuery():
-	add_query = ("INSERT INTO mdl_user_info_keystroke "
-				   "(keyCode, time, action, idUser) "
-				   "VALUES (%(keyCode)s, %(time)s, %(action)s, %(idUser)s)");
-	return add_query;
 	
 @app.route('/validate', methods=['POST'])
 def validate():
-	result = "OK"
 	models = json.loads(request.form['model'], object_hook = keystrokeDecoder);
 	idUser = request.form['idUser'];
-	#insertKeyModelInDB(getAddModelOriginalQuery, idUser, models)
-	##insertKeyModelInDB(getAddModelFakeQuery, idUser, models)
-	validator = ValidateKeys(selectOriginalModelsFromDB(idUser), selectFakeModelsFromDB(idUser));
-	validated = validator.validate(models);
-	return Encoder().encode(validated);
+	print(idUser);
+	insertKeystrokeDataInDB(idUser, models, True);
+	# validator = ValidateKeys(selectOriginalModelsFromDB(idUser), selectFakeModelsFromDB(idUser));
+	# validated = validator.validate(models);
+	#return Encoder().encode(validated);
+	return "OK";
+	
+def insertKeystrokeDataInDB(idUser, models, isTest = False):
+	insertString = "INSERT INTO `mdl_user";
+	insertKeystroke = "INSERT INTO mdl_user";
+	if isTest == True:
+		testePrefix = "_test";
+		insertString = insertString + testePrefix; #
+		insertKeystroke = insertKeystroke + testePrefix;
+	insertString = (insertString + "_key_string`(`id_user`, `string`) VALUES (%s, %s)");
+	insertKeystroke = (insertKeystroke + "_keystroke (key_code, time, action, id_string) "
+				   "VALUES (%(key_code)s, %(time)s, %(action)s, %(id_string)s)");
+	
+	for model in models: # para cada string
+		string = createStringFromKeys(model); # for improve the performance I can update the string after the for bellow
+		idString = insertInDB(insertString, (idUser, string));
+		for key in model:
+			insertInDB(insertKeystroke, getModelQuery(key, idString))
 
-def getAddModelOriginalQuery():
-	add_query = ("INSERT INTO mdl_user_info_keystroke_original "
-				   "(keyCode, time, action, idUser) "
-				   "VALUES (%(keyCode)s, %(time)s, %(action)s, %(idUser)s)");
-	return add_query;	
-
-def insertKeyModelInDB(getQuery, idUser, models):	
+def createStringFromKeys(keys):
+	string = "";
+	for key in keys:
+		string = string + '{}_'.format(key.keyCode);
+	return string[: len(string) - 1];
+	
+def insertInDB(query, queryModel):	
 	try:
-		cnx = mysql.connector.connect(user='root', database='moodle')
-		cursor = cnx.cursor()
-		
-		for model in models:
-			cursor.execute(getQuery(), getModelQuery(model, idUser))
-
+		cnx = mysql.connector.connect(user='root', database='moodle');
+		cursor = cnx.cursor();
+		cursor.execute(query, queryModel);
 		cnx.commit();
 		cursor.close();
 		cnx.close();
+		return cursor.lastrowid;
 	except mysql.connector.Error as err:
 		print(err.msg);
 		exit(1);
 
-def getModelQuery(keyModel, idUser):
+def getModelQuery(keyModel, idString):
 	data_model_keystroke = {
-		 'keyCode': keyModel.keyCode,
+		 'key_code': keyModel.keyCode,
 		  'time': keyModel.time,
 		  'action': keyModel.action,
-		  'idUser': idUser,
+		  'id_string': idString,
 		}
 	return data_model_keystroke;
 
