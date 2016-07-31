@@ -1,0 +1,25 @@
+DELETE FROM `mdl_user_key_string` WHERE `id_user`=22;
+-- DELETE FROM `mdl_user_keystroke` WHERE `id_user`=22;
+DELETE FROM `mdl_user_keystroke_normalized` WHERE `id_user`=22;
+
+
+
+
+
+pegar um usuário
+
+pegar seus dados: de treinamento verdadeiros
+pegar dados de teste falsos
+
+pegar dados de treinamento falsos
+pegar dados de teste verdadeiros
+
+
+
+
+
+
+
+--Teste@123
+
+--nova senha: Teste#123
