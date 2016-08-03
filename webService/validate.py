@@ -10,7 +10,15 @@ from datetime import timedelta
 import datetime
 
 from sklearn.neighbors import KNeighborsClassifier
+from sklearn.neighbors.nearest_centroid import NearestCentroid
+from sklearn import tree
+from sklearn.cross_validation import StratifiedKFold
+from sklearn import svm
 from sklearn.metrics import accuracy_score
+import math
+import numpy
+
+from openpyxl import Workbook
 
 app = Flask(__name__)
 
@@ -146,10 +154,16 @@ class KeysNormalizedModel:
 		self.latencyAverage = latencyAverage;
 		self.pressStandardDeviation = pressStandardDeviation;
 		self.latencyStandardDeviation = latencyStandardDeviation;
-class ValidateModel: #remove
-	def __init__(self, keyTimePressed, latency): #latency up-down
-		self.keyTimePressed = keyTimePressed;
-		self.latency = latency;
+class AlgorithmResultsModel:
+	def __init__(self, algorithm, average, standardDeviation):
+		self.algorithm = algorithm;
+		self.average = average;
+		self.standardDeviation = standardDeviation;
+class AlgorithmPartialResultsModel:
+	def __init__(self, algorithmName):
+		self.algorithmName = algorithmName;
+		self.accuracySum = 0;
+		self.partialAccuracies = [];
 
 def keystrokeDecoder(obj):
 	return KeystrokeModel(obj['keyCode'], obj['time'], obj['action']);
@@ -223,19 +237,44 @@ class ValidateKeys:
 	def predictFromDB(self):
 		users = self.selectUsers();
 		print(users);
+		firstRow = True;
+		wb = Workbook()
+		# grab the active worksheet
+		ws = wb.active
 		for idUser in users:
 			originalNormalizedModels = self.selectOriginalModelsFromDB(idUser);
 			fakeNormalizedModels = self.selectFakeModelsFromDB(idUser);
 			
 			fakeTestGroup = self.selectFakeTestGroup(idUser); 
-			originalTestGroup = self.selectOriginalTestGroup(idUser); 
-			print (originalTestGroup);
+			originalTestGroup = self.selectOriginalTestGroup(idUser);
 			
+			#originalTrainingAndTestGroup = numpy.concatenate((originalNormalizedModels, originalTestGroup), axis=0);
+			#fakeTrainingAndTestGroup = numpy.concatenate((fakeNormalizedModels, fakeTestGroup), axis=0);
+			
+			#validator = ValidateSet(originalTrainingAndTestGroup, fakeTrainingAndTestGroup);
 			validator = ValidateSet(originalNormalizedModels, fakeNormalizedModels);
-			validator.knnPredict(fakeTestGroup, False);
-			validator.knnPredict(originalTestGroup, True);
-		
-		print("--------------")
+			results = validator.compareAlgorithmsUsingCrossValidation();
+			
+			#building the header
+			if (firstRow == True):
+				ws['A2'] = "Users"
+				for i in range(0, len(results), 1):
+					nextColumn = (i*2);
+					ws.cell(row = 1, column = 2 + nextColumn).value = results[i].algorithm;
+					ws.cell(row = 2, column = 2 + nextColumn).value = "Average"
+					ws.cell(row = 2, column = 3 + nextColumn).value = "Standard Deviation"
+				firstRow = False;
+			
+			#building the body
+			rowInXls = []
+			rowInXls.append(idUser);
+			for result in results:
+				rowInXls.append(result.average);
+				rowInXls.append(result.standardDeviation);
+			
+			ws.append(rowInXls);
+				
+		wb.save("sample.xlsx");
 		return "OK" 
 		
 	def selectUsers(self):		
@@ -302,7 +341,7 @@ class ValidateKeys:
 
 class ValidateSet:
 	def __init__(self, originalSet, fakeSet):
-		self.trainingGroup = (originalSet + fakeSet);
+		self.trainingGroup = numpy.concatenate((originalSet, fakeSet), axis=0);
 		self.trainingGroupClassification = self.getGroupClassification(originalSet, fakeSet);
 		
 	def getGroupClassification(self, originalSet, fakeSet):
@@ -315,16 +354,131 @@ class ValidateSet:
 		
 		return result
 	
-	def knnPredict(self, testDatas, isOriginal = False):
-		neigh = KNeighborsClassifier(n_neighbors = 3, metric="euclidean");
-		neigh.fit(self.trainingGroup, self.trainingGroupClassification);
-		result = neigh.predict(testDatas);
-		accuracy = accuracy_score(self.createClass(len(testDatas),isOriginal), result);
-		print(result);
-		print("accuracy: {:7.2%}".format(accuracy))
-		return ''.join(result);
+	def compareAlgorithmsUsingCrossValidation(self):
+		numberOfSets = 10;
+		stratifiedFolds = StratifiedKFold(self.trainingGroupClassification, n_folds = numberOfSets);
+		print("            Training  Test  Accuracy");
+		index = 1;
+		partialAccuracies = [];
+		
+		partialResultsDecitionTree = AlgorithmPartialResultsModel("Decision Tree");
+		partialResultsKnn = AlgorithmPartialResultsModel("K-NN");
+		partialResultsKnnCentroid = AlgorithmPartialResultsModel("K-NN Centroid");
+		#partialResultsSVM = AlgorithmPartialResultsModel("SVM-SVC");
+		
+		for trainingSetIndex, testSetIndex in stratifiedFolds:
+			trainingSetValues = [];
+			trainingSetClassification = [];
+			testSetValues = [];
+			testSetClassification = [];
+			
+			for i in trainingSetIndex:
+				trainingSetValues.append(self.trainingGroup[i]);
+				trainingSetClassification.append(self.trainingGroupClassification[i]);
+			for i in testSetIndex:
+				testSetValues.append(self.trainingGroup[i]);
+				testSetClassification.append(self.trainingGroupClassification[i]);
+			
+			partialResultsDecitionTree = self.updatePartialResults(self.predictUsingDecisionTree, partialResultsDecitionTree, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index);
+			partialResultsKnn = self.updatePartialResults(self.predictUsingKnn, partialResultsKnn, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index);
+			partialResultsKnnCentroid = self.updatePartialResults(self.predictUsingKnnCentroid, partialResultsKnnCentroid, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index);
+			#partialResultsSVM = self.updatePartialResults(self.predictUsingSVM, partialResultsSVM, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index);
+			
+			index += 1;
+		return self.createAlgorithmResultsModel([partialResultsKnn, partialResultsKnnCentroid, partialResultsDecitionTree])
 	
-	def createClass(self, dataLength, dataIsOriginal):
+	def updatePartialResults(self, predictAlgorithm, model, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index):
+		result = predictAlgorithm(trainingSetValues, trainingSetClassification, testSetValues);
+		accuracy = accuracy_score(testSetClassification, result);
+		
+		testGroupLength = len(testSetValues);
+		trainingGroupLength = len(trainingSetValues);
+		
+		model.accuracySum += (accuracy * testGroupLength);
+		model.partialAccuracies.append([accuracy, testGroupLength]);
+		print("rodada:{:2}".format(index), "{0:7}".format(trainingGroupLength), "{0:7}".format(testGroupLength), "{0:9.2%}".format(accuracy));
+		return model;
+	
+	def createAlgorithmResultsModel(self, models):
+		result = [];
+		for model in models:
+			totalAverage = model.accuracySum/len(self.trainingGroup);
+			totalStandardDeviation = self.calcStandardDeviation(model.partialAccuracies, totalAverage);
+			result.append(AlgorithmResultsModel(model.algorithmName, "{:9.2%}".format(totalAverage), "{:9.2%}".format(totalStandardDeviation)))
+		return result;
+		
+	def predictUsingKnn(self, trainingGroup, trainingGroupClassification, testDatas):
+		neighClassifier = KNeighborsClassifier(n_neighbors = 5, metric="euclidean", weights="distance");
+		return self.predict(neighClassifier, trainingGroup, trainingGroupClassification, testDatas);
+	
+	def predictUsingKnnCentroid(self, trainingGroup, trainingGroupClassification, testDatas):
+		neighClassifier = NearestCentroid();
+		return self.predict(neighClassifier, trainingGroup, trainingGroupClassification, testDatas);
+	
+	def predictUsingDecisionTree(self, trainingGroup, trainingGroupClassification, testDatas):
+		treeClassifier = tree.DecisionTreeClassifier();
+		return self.predict(treeClassifier, trainingGroup, trainingGroupClassification, testDatas);
+	
+	def predictUsingSVM(self, trainingGroup, trainingGroupClassification, testDatas):
+		treeClassifier = svm.SVC();
+		return self.predict(treeClassifier, trainingGroup, trainingGroupClassification, testDatas);
+	
+	def predict(self, classifier, trainingGroup, trainingGroupClassification, testDatas):
+		classifier.fit(trainingGroup, trainingGroupClassification);
+		result = classifier.predict(testDatas);
+		return result;	
+	
+	def calcStandardDeviation(self, values, average):
+		sumValues = 0
+		for value in values:
+			sumValues += math.pow(value[0] - average, 2) * value[1];
+		variance = sumValues / (len(self.trainingGroup) - 1);
+		return math.sqrt(variance);
+	
+	def predictUsingDecisionTreeAndStratified(self):
+		NUM_CONJ = 3  #--- número de conjuntos para particionamento dos dados e classes para treinamento
+
+		dados  = self.trainingGroup
+		classe = self.trainingGroupClassification
+		
+		#--- criação dos índices dos elementos de cada folder (conjuntos de treino e teste)
+		skf = StratifiedKFold(classe, n_folds=NUM_CONJ)
+		rodada = 0
+		print("Tam. conjunto: treino  teste")
+		for ind_treino, ind_teste in skf:  #--- exibe tamanhos de cada conjunto (treino e teste)
+			rodada += 1
+			print("--- rodada:{0:2}".format(rodada), "{0:7}".format(len(ind_treino)), "{0:6}".format(len(ind_teste)))	
+
+		rodada = soma_acuracia = 0
+		#--- execução para cada conjunto de dados
+		print("Rodada Acurácia")
+		for ind_treino, ind_teste in skf:
+			#--- criação dos folders
+			dados_treino = []
+			classe_treino = []
+			dados_teste = []
+			classe_teste = []
+			for i in ind_treino:
+				dados_treino.append(dados[i])
+				classe_treino.append(classe[i])
+			for i in ind_teste:
+				dados_teste.append(dados[i])
+				classe_teste.append(classe[i])
+
+			#--- classificação    
+			clf = tree.DecisionTreeClassifier()  #--- definição do classificador
+			clf.fit(dados_treino, classe_treino) #--- treino do classificador do comitê nos dados e classes da partição
+			result = clf.predict(dados_teste)    #--- resultado do clsasificador nos dados de teste da partição
+
+			acuracia = accuracy_score(classe_teste, result)    #--- acurácia da rodada
+			soma_acuracia += (acuracia * len(ind_teste))       #--- soma para média ponderada
+			rodada += 1
+			print("{0:4} - ".format(rodada), "{:7.2%}".format(acuracia))
+
+		print("Total:{:9.2%}".format(soma_acuracia/len(dados)))
+
+	
+	def createClassification(self, dataLength, dataIsOriginal):
 		result = [];
 		label = "F";
 		if dataIsOriginal == True:
