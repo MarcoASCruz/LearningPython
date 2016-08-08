@@ -14,11 +14,19 @@ from sklearn.neighbors.nearest_centroid import NearestCentroid
 from sklearn import tree
 from sklearn.cross_validation import StratifiedKFold
 from sklearn import svm
+from sklearn.naive_bayes import GaussianNB
+from sklearn.ensemble import RandomForestClassifier
+#from sklearn.neural_network import MLPClassifier
+
 from sklearn.metrics import accuracy_score
 import math
 import numpy
 
 from openpyxl import Workbook
+
+import matplotlib.pyplot as plt
+gLatencies = dict();
+
 
 app = Flask(__name__)
 
@@ -54,9 +62,11 @@ def insertKeystrokeDataInDB(idUser, models, isTest = False):
 	for model in models: # for each string
 		string = createStringFromKeys(model); # for improve the performance I can update the string after the for bellow
 		idString = executeSqlInDB(insertString, (idUser, string));
-		insertNormalizedModelInDB(idUser, idString, model, isTest);
+		
 		for key in model:
 			executeSqlInDB(insertKeystroke, getModelQuery(key, idString))
+		
+		insertNormalizedModelInDB(idUser, idString, model, isTest);
 
 def createStringFromKeys(keys):
 	string = "";
@@ -64,15 +74,75 @@ def createStringFromKeys(keys):
 		string = string + '{}_'.format(key.keyCode);
 	return string[: len(string) - 1];
 
-def insertNormalizedModelInDB(idUser, idString, keystroke, isTest = False):
-	insertNormalizedRecord = "INSERT INTO `mdl_user"
-	updateNormalizedRecord = "UPDATE `mdl_user"
 	
-	if isTest == True:
-		insertNormalizedRecord = insertNormalizedRecord + "_test";
-		updateNormalizedRecord = updateNormalizedRecord +"_test";
-	insertNormalizedRecord = insertNormalizedRecord + "_keystroke_normalized`(`id_user`, `id_string`) VALUES (%s, %s)";
-	updateNormalizedRecord = updateNormalizedRecord + "_keystroke_normalized` ";
+@app.route('/recalculate', methods=['POST', 'GET'])
+def recalculate():
+	#updating datas from inicial datas
+	deleteNormalizedDatas();
+	for userString in selectUserStrings():
+		keys = selectKeystrokes(userString.idString);
+		insertNormalizedModelInDB(userString.idUser, userString.idString, keys);
+	
+	
+	global gLatencies;
+	gLatencies = dict();
+	#updating datas from posts
+	deleteNormalizedDatas(True);
+	for userString in selectUserStrings(True):
+		keys = selectKeystrokes(userString.idString, True);
+		insertNormalizedModelInDB(userString.idUser, userString.idString, keys, True);
+	
+	plt.bar(gLatencies.keys(), gLatencies.values())
+	plt.show()
+	
+	return "OK";
+
+def deleteNormalizedDatas(isTest = False):
+	sql = "DELETE FROM `mdl_user#isTest_keystroke_normalized` WHERE 1 = %(trueValue)s";
+	sql = replaceIfIsTest(sql, isTest);
+	executeSqlInDB(sql, {'trueValue': 1});
+
+
+	
+def selectUserStrings(isTest = False):
+	models = []
+	try:
+		cnx = mysql.connector.connect(user='root', database='moodle')
+		cursor = cnx.cursor();
+		
+		sql = replaceIfIsTest("SELECT `id_user`, `id` FROM `mdl_user#isTest_key_string` ORDER BY `id_user`", isTest);
+		
+		cursor.execute(sql);
+		for (id_user, id) in cursor:
+			models.append(UserString(id_user, id));
+
+		cursor.close();
+		cnx.close();
+	except mysql.connector.Error as err:
+		print(err.msg);
+	return models;	
+
+def selectKeystrokes(idString, isTest = False):
+	models = []
+	try:
+		cnx = mysql.connector.connect(user='root', database='moodle')
+		cursor = cnx.cursor();
+		
+		sql = replaceIfIsTest("SELECT key_code, time, action FROM `mdl_user#isTest_keystroke` WHERE `id_string` = %(idString)s  ORDER BY time", isTest);
+		
+		cursor.execute(sql, {'idString': idString});
+		for (key_code, time, action) in cursor:
+			models.append(KeystrokeModel(key_code, time, action));
+
+		cursor.close();
+		cnx.close();
+	except mysql.connector.Error as err:
+		print(err.msg);
+	return models;
+	
+def insertNormalizedModelInDB(idUser, idString, keystroke, isTest = False):
+	insertNormalizedRecord = replaceIfIsTest("INSERT INTO `mdl_user#isTest_keystroke_normalized`(`id_user`, `id_string`) VALUES (%s, %s)", isTest);
+	updateNormalizedRecord = replaceIfIsTest("UPDATE `mdl_user#isTest_keystroke_normalized` ", isTest);
 	
 		
 	executeSqlInDB(insertNormalizedRecord, (idUser, idString));
@@ -103,6 +173,13 @@ def insertNormalizedModelInDB(idUser, idString, keystroke, isTest = False):
 		" WHERE `id_user`= %(id_user)s AND `id_string`= %(id_string)s");
 	executeSqlInDB(updateNormalizedRecord, dbModel);
 	
+def replaceIfIsTest(string, isTest = False):
+	if isTest == True:
+		string = string.replace("#isTest", "_test");
+	else:
+		string = string.replace("#isTest", "");
+	return string;
+	
 def executeSqlInDB(query, queryModel):	
 	try:
 		cnx = mysql.connector.connect(user='root', database='moodle');
@@ -132,7 +209,7 @@ def getDate(dateMilliseconds):
 def convertToMilliseconds(microseconds):
 	return microseconds / 1000;
 
-
+	
 @app.route('/test', methods=['POST', 'GET'])
 def test():
 	#model = json.loads(request.form['model'], object_hook = keystrokeDecoder);
@@ -141,6 +218,9 @@ def test():
 	#validateKeys.predict(idUser, model);
 	validateKeys.predictFromDB();
 	return "OK";
+	
+	
+	
 	
 	
 class KeystrokeModel:
@@ -164,7 +244,12 @@ class AlgorithmPartialResultsModel:
 		self.algorithmName = algorithmName;
 		self.accuracySum = 0;
 		self.partialAccuracies = [];
-
+class UserString:
+	def __init__(self, idUser, idString):
+		self.idUser = idUser;
+		self.idString = idString;	
+		
+		
 def keystrokeDecoder(obj):
 	return KeystrokeModel(obj['keyCode'], obj['time'], obj['action']);
 
@@ -172,6 +257,8 @@ class Encoder(JSONEncoder):
     def default(self, o):
         return o.__dict__  
 
+		
+		
 class KeystrokeDimensionsExtractor:
 	def __init__(self, keys):
 		self.keys = keys;
@@ -180,7 +267,7 @@ class KeystrokeDimensionsExtractor:
 		result = [];
 		
 		for i in range(0, len(self.keys), 1):
-			if self.keys[i].action == "DOWN":
+			if self.keys[i].action == "DOWN" and self.keyIsValid(self.keys[i].keyCode):
 				keyUp = self.findKeyUp(self.keys, i+1, self.keys[i]);
 				timePressed = getDate(keyUp.time) - getDate(self.keys[i].time);
 				result.append(convertToMilliseconds(timePressed.microseconds));
@@ -190,19 +277,33 @@ class KeystrokeDimensionsExtractor:
 	def getLatencies(self):
 		result = [];
 		
+		global gLatencies;
+		
 		i = 0;
 		while i < len(self.keys): #actually, the break will decide when stop
 			nextPosition = i + 1;
 			keyUp = self.findKeyUp(self.keys, nextPosition, self.keys[i]);
 			nextKeyDownPosition = self.findNextKeyDownPosition(self.keys, nextPosition, self.keys[i]);
 			if nextKeyDownPosition != None:
-				result.append(self.calcLatency(keyUp, self.keys[nextKeyDownPosition])); 
+				#if (self.keyIsValid(keyUp.keyCode) and self.keyIsValid(self.keys[nextKeyDownPosition].keyCode)):
+				#if self.isDigraph(keyUp.keyCode, self.keys[nextKeyDownPosition].keyCode):
+				latency = self.calcLatency(keyUp, self.keys[nextKeyDownPosition]);
+				#if latency < 600:
+				if latency in gLatencies:
+					gLatencies[latency] += 1;
+				else:
+					gLatencies[latency] = 1;
+				result.append(latency); 
 				i = nextKeyDownPosition;
 			else:
 				break;
-				
+
+		if(len(result) == 0):
+			result.append(0);
+		
+		
 		return result;
-	
+		
 	def findKeyUp(self, keys, startPosition, keyDown):
 		keyUp = None
 		for i in range(startPosition, len(keys), 1):
@@ -218,6 +319,47 @@ class KeystrokeDimensionsExtractor:
 				nextKeyDownPosition = i;
 				break;
 		return nextKeyDownPosition;
+	
+	def keyIsValid(self, keyCode):
+		result = False;
+		if keyCode >= 48 and keyCode <= 90:
+			result = True
+		return result;
+	
+	def isDigraph(self, firstKeyCode, secondKeyCode):
+		result = False;
+		if (firstKeyCode == 76 and secondKeyCode == 72): #lh
+			result = True
+		if (firstKeyCode == 78 and secondKeyCode == 72): #nh
+			result = True
+		if (firstKeyCode == 67 and secondKeyCode == 72): #ch
+			result = True
+		if (firstKeyCode == 71 and secondKeyCode == 85): #gu
+			result = True
+		if (firstKeyCode == 81 and secondKeyCode <= 85): #qu
+			result = True
+		
+		if (firstKeyCode == 65 and secondKeyCode == 77): #am
+			result = True
+		if (firstKeyCode == 65 and secondKeyCode == 78): #an
+			result = True
+		if (firstKeyCode == 69 and secondKeyCode == 77): #em
+			result = True
+		if (firstKeyCode == 69 and secondKeyCode == 78): #en
+			result = True
+		if (firstKeyCode == 73 and secondKeyCode == 77): #im
+			result = True
+		if (firstKeyCode == 73 and secondKeyCode == 78): #in
+			result = True
+		if (firstKeyCode == 79 and secondKeyCode == 77): #om
+			result = True
+		if (firstKeyCode == 79 and secondKeyCode == 78): #on
+			result = True
+		if (firstKeyCode == 85 and secondKeyCode == 77): #um
+			result = True
+		if (firstKeyCode == 85 and secondKeyCode == 78): #un
+			result = True
+		return result;
 	
 	def calcLatency(self, keyUp, keyDown):
 		latency = None;
@@ -248,11 +390,11 @@ class ValidateKeys:
 			fakeTestGroup = self.selectFakeTestGroup(idUser); 
 			originalTestGroup = self.selectOriginalTestGroup(idUser);
 			
-			#originalTrainingAndTestGroup = numpy.concatenate((originalNormalizedModels, originalTestGroup), axis=0);
-			#fakeTrainingAndTestGroup = numpy.concatenate((fakeNormalizedModels, fakeTestGroup), axis=0);
+			originalTrainingAndTestGroup = numpy.concatenate((originalNormalizedModels, originalTestGroup), axis=0);
+			fakeTrainingAndTestGroup = numpy.concatenate((fakeNormalizedModels, fakeTestGroup), axis=0);
 			
-			#validator = ValidateSet(originalTrainingAndTestGroup, fakeTrainingAndTestGroup);
-			validator = ValidateSet(originalNormalizedModels, fakeNormalizedModels);
+			validator = ValidateSet(originalTrainingAndTestGroup, fakeTrainingAndTestGroup);
+			#validator = ValidateSet(originalNormalizedModels, fakeNormalizedModels);
 			results = validator.compareAlgorithmsUsingCrossValidation();
 			
 			#building the header
@@ -364,7 +506,10 @@ class ValidateSet:
 		partialResultsDecitionTree = AlgorithmPartialResultsModel("Decision Tree");
 		partialResultsKnn = AlgorithmPartialResultsModel("K-NN");
 		partialResultsKnnCentroid = AlgorithmPartialResultsModel("K-NN Centroid");
-		#partialResultsSVM = AlgorithmPartialResultsModel("SVM-SVC");
+		partialResultsSVM = AlgorithmPartialResultsModel("SVM-SVC");
+		partialResultsNaiveBayes = AlgorithmPartialResultsModel("Naive Bayes");
+		partialResultsRandomForest = AlgorithmPartialResultsModel("Random Forest");
+		#partialResultsNeuralNetwork = AlgorithmPartialResultsModel("Neural Network - MPL");
 		
 		for trainingSetIndex, testSetIndex in stratifiedFolds:
 			trainingSetValues = [];
@@ -382,10 +527,13 @@ class ValidateSet:
 			partialResultsDecitionTree = self.updatePartialResults(self.predictUsingDecisionTree, partialResultsDecitionTree, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index);
 			partialResultsKnn = self.updatePartialResults(self.predictUsingKnn, partialResultsKnn, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index);
 			partialResultsKnnCentroid = self.updatePartialResults(self.predictUsingKnnCentroid, partialResultsKnnCentroid, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index);
-			#partialResultsSVM = self.updatePartialResults(self.predictUsingSVM, partialResultsSVM, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index);
+			partialResultsSVM = self.updatePartialResults(self.predictUsingSVM, partialResultsSVM, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index);
+			partialResultsNaiveBayes = self.updatePartialResults(self.predictUsingNaiveBayes, partialResultsNaiveBayes, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index);
+			partialResultsRandomForest = self.updatePartialResults(self.predictUsingRandomForest, partialResultsRandomForest, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index);
+			#partialResultsNeuralNetwork = self.updatePartialResults(self.predictUsingNeuralNetwork, partialResultsNeuralNetwork, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index);
 			
 			index += 1;
-		return self.createAlgorithmResultsModel([partialResultsKnn, partialResultsKnnCentroid, partialResultsDecitionTree])
+		return self.createAlgorithmResultsModel([partialResultsKnn, partialResultsKnnCentroid, partialResultsDecitionTree, partialResultsSVM, partialResultsNaiveBayes, partialResultsRandomForest])
 	
 	def updatePartialResults(self, predictAlgorithm, model, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index):
 		result = predictAlgorithm(trainingSetValues, trainingSetClassification, testSetValues);
@@ -420,8 +568,20 @@ class ValidateSet:
 		return self.predict(treeClassifier, trainingGroup, trainingGroupClassification, testDatas);
 	
 	def predictUsingSVM(self, trainingGroup, trainingGroupClassification, testDatas):
-		treeClassifier = svm.SVC();
-		return self.predict(treeClassifier, trainingGroup, trainingGroupClassification, testDatas);
+		svmClassifier = svm.SVC();
+		return self.predict(svmClassifier, trainingGroup, trainingGroupClassification, testDatas);
+	
+	def predictUsingNaiveBayes(self, trainingGroup, trainingGroupClassification, testDatas):
+		naiveBayesClassifier = GaussianNB();
+		return self.predict(naiveBayesClassifier, trainingGroup, trainingGroupClassification, testDatas);
+	
+	def predictUsingRandomForest(self, trainingGroup, trainingGroupClassification, testDatas):
+		randomForestClassifier = RandomForestClassifier();
+		return self.predict(randomForestClassifier, trainingGroup, trainingGroupClassification, testDatas);
+	
+	def predictUsingNeuralNetwork(self, trainingGroup, trainingGroupClassification, testDatas):
+		neuralNetworkClassifier = MLPClassifier(algorithm='l-bfgs', alpha=1e-5, hidden_layer_sizes=(5, 2), random_state=1);
+		return self.predict(neuralNetworkClassifier, trainingGroup, trainingGroupClassification, testDatas);
 	
 	def predict(self, classifier, trainingGroup, trainingGroupClassification, testDatas):
 		classifier.fit(trainingGroup, trainingGroupClassification);
