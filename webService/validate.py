@@ -16,7 +16,7 @@ from sklearn.cross_validation import StratifiedKFold
 from sklearn import svm
 from sklearn.naive_bayes import GaussianNB
 from sklearn.ensemble import RandomForestClassifier
-#from sklearn.neural_network import MLPClassifier
+from sklearn.neural_network import MLPClassifier
 
 from sklearn.metrics import accuracy_score
 import math
@@ -43,9 +43,6 @@ def validate():
 	models = json.loads(request.form['model'], object_hook = keystrokeDecoder);
 	idUser = request.form['idUser'];
 	insertKeystrokeDataInDB(idUser, models, True);
-	# validator = ValidateKeys(selectOriginalModelsFromDB(idUser), selectFakeModelsFromDB(idUser));
-	# validated = validator.validate(models);
-	#return Encoder().encode(validated);
 	return "OK";
 	
 def insertKeystrokeDataInDB(idUser, models, isTest = False):
@@ -257,8 +254,7 @@ class Encoder(JSONEncoder):
     def default(self, o):
         return o.__dict__  
 
-		
-		
+
 class KeystrokeDimensionsExtractor:
 	def __init__(self, keys):
 		self.keys = keys;
@@ -509,7 +505,7 @@ class ValidateSet:
 		partialResultsSVM = AlgorithmPartialResultsModel("SVM-SVC");
 		partialResultsNaiveBayes = AlgorithmPartialResultsModel("Naive Bayes");
 		partialResultsRandomForest = AlgorithmPartialResultsModel("Random Forest");
-		#partialResultsNeuralNetwork = AlgorithmPartialResultsModel("Neural Network - MPL");
+		partialResultsNeuralNetwork = AlgorithmPartialResultsModel("Neural Network - MPL");
 		
 		for trainingSetIndex, testSetIndex in stratifiedFolds:
 			trainingSetValues = [];
@@ -530,10 +526,10 @@ class ValidateSet:
 			partialResultsSVM = self.updatePartialResults(self.predictUsingSVM, partialResultsSVM, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index);
 			partialResultsNaiveBayes = self.updatePartialResults(self.predictUsingNaiveBayes, partialResultsNaiveBayes, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index);
 			partialResultsRandomForest = self.updatePartialResults(self.predictUsingRandomForest, partialResultsRandomForest, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index);
-			#partialResultsNeuralNetwork = self.updatePartialResults(self.predictUsingNeuralNetwork, partialResultsNeuralNetwork, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index);
+			partialResultsNeuralNetwork = self.updatePartialResults(self.predictUsingNeuralNetwork, partialResultsNeuralNetwork, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index);
 			
 			index += 1;
-		return self.createAlgorithmResultsModel([partialResultsKnn, partialResultsKnnCentroid, partialResultsDecitionTree, partialResultsSVM, partialResultsNaiveBayes, partialResultsRandomForest])
+		return self.createAlgorithmResultsModel([partialResultsKnn, partialResultsKnnCentroid, partialResultsDecitionTree, partialResultsSVM, partialResultsNaiveBayes, partialResultsRandomForest, partialResultsNeuralNetwork])
 	
 	def updatePartialResults(self, predictAlgorithm, model, trainingSetValues, trainingSetClassification, testSetValues, testSetClassification, index):
 		result = predictAlgorithm(trainingSetValues, trainingSetClassification, testSetValues);
